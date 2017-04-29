@@ -119,6 +119,18 @@ sys_sigsend(void)
 }
 
 int
-sys_sigreturn(void){
+sys_sigreturn(void)
+{
     return sigreturn();
+}
+
+int
+sys_alarm(void)
+{
+    int ticks;
+    if(argint(0, &ticks) < 0) {
+        return -1;
+    }
+    alarm(ticks);
+    return 0;
 }

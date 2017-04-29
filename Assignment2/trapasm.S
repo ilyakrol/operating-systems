@@ -40,10 +40,10 @@ trapret:
   addl $0x8, %esp  # trapno and errcode
   iret
 
-  .globl ret_start
-  .globl ret_end
-  ret_start:
+
+.globl ret_start
+.globl ret_end
+ret_start:
     movl $SYS_sigreturn, %eax
     int $T_SYSCALL
-    ret
-  ret_end:
+ret_end:

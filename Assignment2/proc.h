@@ -1,4 +1,5 @@
 #define NUMSIG 32   // max num of dupported signals
+#define SIGALRM 14
 
 // Per-CPU state
 struct cpu {
@@ -68,6 +69,7 @@ struct proc {
   uint pending;                // Currently unhandled signals
   sighandler_t sig_handlers[NUMSIG];  // Current signal handlers
   int handling_signal;         // Flag that indicates that a signa is currently being handled
+  int alarm_ticks;             // Ticks remaining until firing alarm
 };
 
 // Process memory is laid out contiguously, low addresses first:

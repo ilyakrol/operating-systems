@@ -82,11 +82,11 @@ found:
   // init signals
   p->pending = 0;   // no pending signals yet
   p->handling_signal = 0;   // not handling signals yet
+  p->alarm_ticks = 0;   // no scheduled alarm yet
   int i;
   for(i = 0; i < NUMSIG; i++) {
       p->sig_handlers[i] = (sighandler_t) default_sig_handler;
   }
-
   return p;
 }
 
@@ -195,6 +195,7 @@ fork(void)
   np->state = RUNNABLE;
   np->pending = 0;   // no pending signals yet
   np->handling_signal = 0;   // not handling signals yet
+  np->alarm_ticks = 0;  // no scheduled alarm yet
 
   release(&ptable.lock);
 
@@ -537,9 +538,8 @@ sigsend(int pid, int signum)
 
 int
 sigreturn() {
-    // *(proc->tf) = proc->backup_tf;  // restore the trap frame
-    // cprintf("USER STACK = %s\n", proc->tf->esp);
     cprintf("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n");
+    // proc->tf = proc->backup_tf;  // restore the trap frame
     // memmove((void*) proc->tf, &proc->tf->esp, sizeof(struct trapframe));
     proc->handling_signal = 0;  // finished handling the signal
     return 0;
@@ -555,14 +555,12 @@ check_for_pending_signals(struct trapframe *tf)
       for(i = 0; i < NUMSIG; i++) {
           if(proc->pending & (1 << i)) {    // signal i is pending
               proc->pending &= ~(1 << i);   // turn off the bit
-              cprintf("CHECK pending = %d\n", proc->pending);
               if(proc->sig_handlers[i] == (sighandler_t) default_sig_handler) {   // default handler
                   default_sig_handler(i);
                   proc->handling_signal = 0;    // finished handling the signal
                   return;
               }
-              cprintf("----1----\n");
-            //   proc->backup_tf = *tf;    // back up the trapframe
+            //   proc->backup_tf = tf;    // back up the trapframe
 
             //     cprintf("ESP BEFORE = %d\n", proc->tf->esp);
             //     cprintf("sizeof(struct trapframe) = %d\n", sizeof(struct trapframe));
@@ -570,61 +568,44 @@ check_for_pending_signals(struct trapframe *tf)
             //   cprintf("ESP AFTER = %d\n", proc->tf->esp);
             //   memmove((void*) proc->tf->esp, tf, sizeof(struct trapframe));
 
-              cprintf("----2----\n");
-
               uint sigret_func_size = (uint) &ret_end - (uint) &ret_start;
-              cprintf("sigret_func_size = %d\n", sigret_func_size);
               proc->tf->esp -= sigret_func_size;
-
-              cprintf("----3----\n");
-
               uint ret_addr = proc->tf->esp;
-              cprintf("RETURN ADDRESS = %d\n", ret_addr);
               memmove((void*) proc->tf->esp, ret_start, sigret_func_size);
-              cprintf("----4----\n");
               proc->tf->esp -= 4;
               *((int*) proc->tf->esp) = i;  // save pending signal number
-              cprintf("----5----\n");
               proc->tf->esp -= 4;
               *((int*) proc->tf->esp) = ret_addr;   // save the return address that point to the invocation of sigreturn
-              cprintf("----6----\n");
               proc->tf->eip = (uint) proc->sig_handlers[i]; // make the first instruction to execute in user space be the signal handler
-              cprintf("----7----\n");
               return;
       }
     }
   }
 }
 
-// void
-// check(struct trapframe *tf)
-// {
-//     if((tf->cs & 3)!=DPL_USER||proc==0 ||proc->pending==0)
-//         return ;
-//     int i=0;
-//     for(i=0;i<NUMSIG;i++){
-//         int one=1;
-//         one=one<<i;
-//         if((one & proc->pending)!=0){
-//             if(proc->sig_hendl[i]==(sighandler_t)def_handl){
-//                 def_handl(i);
-//                 proc->pending=proc->pending ^ one;
-//             }
-//             else{
-//                 memmove(&(proc->save_tf),proc->tf, sizeof(struct trapframe));
-//                 proc->pending = proc->pending ^ one;//xor
-//               uint fsize= (uint)&fsigret_end-(uint)&fsigret_start;
-//                 proc->tf->esp =proc->tf->esp- fsize;
-//                 uint bu=proc->tf->esp;
-//                 memmove((void*)proc->tf->esp,fsigret_start, fsize); //copy invoce sigreturn function
-//                 proc->tf->esp = proc->tf->esp-4;
-//                 * ((int*)proc->tf->esp)=i;
-//                 proc->tf->esp = proc->tf->esp-4;
-//                 * ((int*)proc->tf->esp)=bu;
-//                 proc->tf->eip=(uint)proc->sig_hendl[i];
-//
-//                  return ;
-//             }
-//
-//         }
-//     }
+int
+alarm(int ticks)
+{
+    if (ticks == 0) {
+        proc->pending &= ~(1 << (SIGALRM - 1)); // cancel alarm if set
+    }
+    proc->alarm_ticks = ticks;  // update ticks until alarm
+    return 0;
+}
+
+void
+update_alarm_ticks()
+{
+    struct proc *p;
+    acquire(&ptable.lock);
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+        if(p->alarm_ticks == 1) {
+            p->pending |= 1 << (SIGALRM - 1);   // set alarm
+            p->alarm_ticks = 0;
+        }
+        if(p->alarm_ticks > 0) {
+            p->alarm_ticks--;
+        }
+    }
+    release(&ptable.lock);
+}
