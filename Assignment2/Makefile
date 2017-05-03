@@ -24,6 +24,7 @@ OBJS = \
 	sysproc.o\
 	timer.o\
 	trapasm.o\
+	sigret.o\
 	trap.o\
 	uart.o\
 	vectors.o\

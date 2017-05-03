@@ -6,8 +6,9 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
-extern void *ret_start;
-extern void *ret_end;
+
+extern void ret_start();
+extern void ret_end();
 
 struct {
   struct spinlock lock;
@@ -538,9 +539,9 @@ sigsend(int pid, int signum)
 
 int
 sigreturn() {
-    cprintf("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n");
-    // proc->tf = proc->backup_tf;  // restore the trap frame
-    memmove((void*) proc->tf, &proc->tf->esp, sizeof(struct trapframe));
+    // restore the trap frame
+    uint sigret_func_size = (uint) &ret_end - (uint) &ret_start;    // for offset
+    memmove((void*) proc->tf, (void*) (proc->tf->esp + 4 + sigret_func_size), sizeof(struct trapframe));
     proc->handling_signal = 0;  // finished handling the signal
     return 0;
 }
@@ -560,23 +561,24 @@ check_for_pending_signals(struct trapframe *tf)
                   proc->handling_signal = 0;    // finished handling the signal
                   return;
               }
-            //   proc->backup_tf = tf;    // back up the trapframe
-
-            //     cprintf("ESP BEFORE = %d\n", proc->tf->esp);
-            //     cprintf("sizeof(struct trapframe) = %d\n", sizeof(struct trapframe));
-              proc->tf->esp -= sizeof(struct trapframe);
-            //   cprintf("ESP AFTER = %d\n", proc->tf->esp);
-              memmove((void*) proc->tf->esp, tf, sizeof(struct trapframe));
-
+              uint local_esp = proc->tf->esp;   // save a local reference of the esp
+              // back up the trapframe
+              local_esp -= sizeof(struct trapframe);
+              memmove((void*) local_esp, tf, sizeof(struct trapframe));
+              // assembly call to sigreturn() as the return address of the signal handler
               uint sigret_func_size = (uint) &ret_end - (uint) &ret_start;
-              proc->tf->esp -= sigret_func_size;
-              uint ret_addr = proc->tf->esp;
-              memmove((void*) proc->tf->esp, ret_start, sigret_func_size);
-              proc->tf->esp -= 4;
-              *((int*) proc->tf->esp) = i;  // save pending signal number
-              proc->tf->esp -= 4;
-              *((int*) proc->tf->esp) = ret_addr;   // save the return address that point to the invocation of sigreturn
+              local_esp -= sigret_func_size;
+              uint ret_addr = local_esp;
+              memmove((void*) local_esp, ret_start, sigret_func_size);
+              // save pending signal number
+              local_esp -= 4;
+              *((int*) local_esp) = i;
+              // save the return address that point to the invocation of sigreturn()
+              local_esp -= 4;
+              *((int*) local_esp) = ret_addr;
+
               proc->tf->eip = (uint) proc->sig_handlers[i]; // make the first instruction to execute in user space be the signal handler
+              proc->tf->esp = local_esp;    // restore changed esp
               return;
       }
     }

@@ -1,6 +1,4 @@
 #include "mmu.h"
-#include "syscall.h"
-#include "traps.h"
 
   # vectors.S sends all traps here.
 .globl alltraps
@@ -39,11 +37,3 @@ trapret:
   popl %ds
   addl $0x8, %esp  # trapno and errcode
   iret
-
-
-.globl ret_start
-.globl ret_end
-ret_start:
-    movl $SYS_sigreturn, %eax
-    int $T_SYSCALL
-ret_end:
