@@ -6,8 +6,8 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
-extern void * ret_start;
-extern void * ret_end;
+extern void *ret_start;
+extern void *ret_end;
 
 struct {
   struct spinlock lock;
@@ -540,7 +540,7 @@ int
 sigreturn() {
     cprintf("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n");
     // proc->tf = proc->backup_tf;  // restore the trap frame
-    // memmove((void*) proc->tf, &proc->tf->esp, sizeof(struct trapframe));
+    memmove((void*) proc->tf, &proc->tf->esp, sizeof(struct trapframe));
     proc->handling_signal = 0;  // finished handling the signal
     return 0;
 }
@@ -564,9 +564,9 @@ check_for_pending_signals(struct trapframe *tf)
 
             //     cprintf("ESP BEFORE = %d\n", proc->tf->esp);
             //     cprintf("sizeof(struct trapframe) = %d\n", sizeof(struct trapframe));
-            //   proc->tf->esp -= sizeof(struct trapframe);
+              proc->tf->esp -= sizeof(struct trapframe);
             //   cprintf("ESP AFTER = %d\n", proc->tf->esp);
-            //   memmove((void*) proc->tf->esp, tf, sizeof(struct trapframe));
+              memmove((void*) proc->tf->esp, tf, sizeof(struct trapframe));
 
               uint sigret_func_size = (uint) &ret_end - (uint) &ret_start;
               proc->tf->esp -= sigret_func_size;
