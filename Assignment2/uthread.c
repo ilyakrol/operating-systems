@@ -183,7 +183,7 @@ uthread_join(int tid)
         t->waiting_threads[curr_t->tid] = 1;    // mark the current thread as waiting for the desired thread to terminate
         curr_t->state = T_BLOCKED;  // the current thread is now blocked
     }
-    sigsend(getpid(), 14);  // context switch
+    sigsend(getpid(), SIGALRM - 1);  // context switch
     return 0;
 }
 
