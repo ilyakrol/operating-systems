@@ -564,7 +564,7 @@ check_for_pending_signals(struct trapframe *tf)
               uint local_esp = proc->tf->esp;   // save a local reference of the esp
               // back up the trapframe
               local_esp -= sizeof(struct trapframe);
-              memmove((void*) local_esp, tf, sizeof(struct trapframe));
+              memmove((void*) local_esp, (void*) proc->tf, sizeof(struct trapframe));
               // assembly call to sigreturn() as the return address of the signal handler
               uint sigret_func_size = (uint) &ret_end - (uint) &ret_start;
               local_esp -= sigret_func_size;
@@ -603,7 +603,6 @@ update_alarm_ticks()
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
         if(p->alarm_ticks == 1) {
             p->pending |= 1 << (SIGALRM - 1);   // set alarm
-            p->alarm_ticks = 0;
         }
         if(p->alarm_ticks > 0) {
             p->alarm_ticks--;

@@ -6,4 +6,5 @@
 ret_start:
     movl $SYS_sigreturn, %eax
     int $T_SYSCALL
+    ret
 ret_end:
