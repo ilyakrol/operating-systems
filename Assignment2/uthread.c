@@ -9,6 +9,8 @@
 
 static struct uthread *curr_t;  // the current thread
 static struct ttable ttable;	// threads table
+static struct binary_table binary_table;
+int number_of_semaphores = 0;
 
 int
 uthread_init()
@@ -118,6 +120,7 @@ uthread_schedule()
             i = 0;
         }
     }
+    alarm(THREAD_QUANTA);
 }
 
 void
@@ -188,7 +191,7 @@ uthread_join(int tid)
 }
 
 int
-uthred_sleep(int ticks)
+uthread_sleep(int ticks)
 {
     alarm(0);   // cancel any pending alarm to prevent context switch while executing function
     if(ticks < 0) {
@@ -219,4 +222,134 @@ switch_threads(struct uthread *next_thread, uint ebp)
     } else {
         *((struct trapframe*) ebp) = *curr_t->tf;   // copy the entire trapframe from the next thread to the process stack
     }
+}
+
+/* ===================================================== *
+ * ========== Binary Semaphores - ass2 task 3 part1 ==== *
+ * ===================================================== */
+
+int bsem_alloc()
+{
+    alarm(0);
+    int i = number_of_semaphores;
+    number_of_semaphores++;
+    if(number_of_semaphores >= MAX_BSEM)
+        return -1;
+    binary_table.binary_semaphore_arr[i] = (BINSEM *) malloc(sizeof(BINSEM));
+    binary_table.binary_semaphore_arr[i]->binary_semaphore_ID = i;
+    binary_table.binary_semaphore_arr[i]->value = 1;
+    binary_table.binary_semaphore_arr[i]->threadsQueue = 0;
+    return i;
+}
+
+void bsem_free(int bin_sem_descriptor)
+{
+    alarm(0);
+    if(binary_table.binary_semaphore_arr[bin_sem_descriptor]->threadsQueue != 0) {
+        free(binary_table.binary_semaphore_arr[bin_sem_descriptor]);
+        binary_table.binary_semaphore_arr[bin_sem_descriptor] = 0;
+    }
+}
+
+void bsem_down(int bin_sem_descriptor)
+{
+    alarm(0);
+    BINSEM* semaphore = binary_table.binary_semaphore_arr[bin_sem_descriptor];
+    if(semaphore == 0) {
+        printf(2, "semaphore not found");
+        return;
+    }
+    if(semaphore->value == 1) {
+        semaphore->value = 0;
+        return;
+    }
+    enqueueToSem(&semaphore->threadsQueue, curr_t);
+    curr_t->state = T_SLEEPING_ON_SEM;
+    sigsend(getpid(), SIGALRM - 1);  // context switch
+}
+
+void bsem_up(int bin_sem_descriptor)
+{
+    alarm(0);
+    BINSEM* semaphore = binary_table.binary_semaphore_arr[bin_sem_descriptor];
+    if (semaphore->value == 0) {
+        struct uthread* waiting = dequeueToSem(&semaphore->threadsQueue);
+        if (waiting == 0) { //no one is waiting
+           semaphore->value = 1;
+        }
+        else {  //somebody is waiting
+            waiting->state = T_READY;
+            sigsend(getpid(), SIGALRM - 1);  // context switch
+        }
+    }
+}
+
+struct uthread* enqueueToSem(struct uthread **head, struct uthread* t)
+{
+  if(*head != 0) {
+    struct uthread* current = *head;
+    while (current->nextWaiting != 0) {
+        current = current->nextWaiting;
+    }
+    current->nextWaiting = t;
+  } else {
+    *head = t;
+  }
+  t->nextWaiting = 0;
+  return *head;
+}
+
+struct uthread* dequeueToSem(struct uthread **head)
+{
+  struct uthread* result = 0;
+  if (*head != 0) {
+    result = *head;
+    *head = (*head)->nextWaiting;
+    result->nextWaiting = 0;
+  }
+  return result;
+}
+
+/* ===================================================== *
+ * ========== Counting Semaphores - ass2 task 3 part2=== *
+ * ===================================================== */
+
+COUNT_SEMAPHORE* csem_alloc(int value)
+{
+    COUNT_SEMAPHORE* countsem = (COUNT_SEMAPHORE *) malloc(sizeof(COUNT_SEMAPHORE));
+    countsem->s1 = bsem_alloc();
+    countsem->s2 = bsem_alloc();
+    if(value == 0) {
+        binary_table.binary_semaphore_arr[countsem->s2]->value = 0;
+    }
+    countsem->value = value;
+    return countsem;
+}
+
+void down(COUNT_SEMAPHORE *sem)
+{
+    bsem_down(sem->s2);
+    bsem_down(sem->s1);
+    sem->value--;
+    if(sem->value > 0) {
+      bsem_up(sem->s2);
+    }
+    bsem_up(sem->s1);
+}
+
+void up(COUNT_SEMAPHORE  *sem)
+{
+    bsem_down(sem->s1);
+    sem->value++;
+    if(sem->value == 1) {
+      bsem_up(sem->s2);
+    }
+    bsem_up(sem->s1);
+}
+
+void free_csem(COUNT_SEMAPHORE* sem)
+{
+    bsem_free(sem->s1);
+    bsem_free(sem->s2);
+    free(sem);
 }

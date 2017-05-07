@@ -589,6 +589,7 @@ int
 alarm(int ticks)
 {
     if (ticks == 0) {
+        proc->alarm_ticks = 0;
         proc->pending &= ~(1 << (SIGALRM - 1)); // cancel alarm if set
     }
     proc->alarm_ticks = ticks;  // update ticks until alarm
