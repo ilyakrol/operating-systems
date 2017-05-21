@@ -29,6 +29,7 @@ pipealloc(struct file **f0, struct file **f1)
     goto bad;
   if((p = (struct pipe*)kalloc()) == 0)
     goto bad;
+  pages_allocated_in_system++;
   p->readopen = 1;
   p->writeopen = 1;
   p->nwrite = 0;
@@ -46,8 +47,10 @@ pipealloc(struct file **f0, struct file **f1)
 
 //PAGEBREAK: 20
  bad:
-  if(p)
+  if(p) {
     kfree((char*)p);
+    pages_allocated_in_system--;
+  }
   if(*f0)
     fileclose(*f0);
   if(*f1)
@@ -69,6 +72,7 @@ pipeclose(struct pipe *p, int writable)
   if(p->readopen == 0 && p->writeopen == 0){
     release(&p->lock);
     kfree((char*)p);
+    pages_allocated_in_system--;
   } else
     release(&p->lock);
 }

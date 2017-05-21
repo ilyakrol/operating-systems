@@ -49,8 +49,9 @@ struct context {
   uint eip;
 };
 
-#define RAM     0
-#define DISK    1
+#define BLANK   0
+#define RAM     1
+#define DISK    2
 
 #define LIFO 0
 #define SCFIFO 1
@@ -61,6 +62,7 @@ struct pages {
   int count;
   uint va[MAX_TOTAL_PAGES];
   char location[MAX_TOTAL_PAGES];
+  int access_counter[MAX_TOTAL_PAGES];
 };
 
 struct page_in_disk {
@@ -109,6 +111,7 @@ struct proc {
   struct fifo_policy_queue fifo_queue;
   uint page_faults;             // number of page faults
   uint paged_out;               // number of pages in the disk
+  uint total_paged_out;         // total number of paged out pages
 };
 
 // Process memory is laid out contiguously, low addresses first:

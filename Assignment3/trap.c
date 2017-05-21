@@ -88,7 +88,7 @@ trap(struct trapframe *tf)
       }
 
       if(get_pages_in_ram_count() >= MAX_PSYC_PAGES) {
-          // TODO: swap determine on a policy
+          page_out_appropriate_page();
       }
 
       // get the offset in the swap file ofthe needed page
@@ -96,7 +96,10 @@ trap(struct trapframe *tf)
 
       char* page_mem;
       page_mem = kalloc();  // allocate a page worth of memory
-      if(mem == 0) panic("could not allocate memory for page");
+      if(page_mem == 0) panic("could not allocate memory for page");
+      pages_allocated_in_system++;
+      if(SELECTION == LIFO) push_to_lifo(cr2);
+      else if(SELECTION == SCFIFO) enqueue_scfifo(cr2);
       memset(page_mem, 0, PGSIZE);
       if(readFromSwapFile(proc, page_mem, offset, PGSIZE) == -1) panic("could not read from swap file");
 
@@ -134,8 +137,10 @@ trap(struct trapframe *tf)
 
   // Force process to give up CPU on clock tick.
   // If interrupts were on while locks held, would need to check nlock.
-  if(proc && proc->state == RUNNING && tf->trapno == T_IRQ0+IRQ_TIMER)
-    yield();
+  if(proc && proc->state == RUNNING && tf->trapno == T_IRQ0+IRQ_TIMER) {
+      if(SELECTION == LAP) update_access_lap();
+      yield();
+  }
 
   // Check if the process has been killed since we yielded
   if(proc && proc->killed && (tf->cs&3) == DPL_USER)

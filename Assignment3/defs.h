@@ -70,6 +70,8 @@ char*           kalloc(void);
 void            kfree(char*);
 void            kinit1(void*, void*);
 void            kinit2(void*, void*);
+int 			pages_allocated_in_system;
+int 			total_pages_in_system;
 
 // kbd.c
 void            kbdintr(void);
@@ -105,6 +107,8 @@ void            pipeclose(struct pipe*, int);
 int             piperead(struct pipe*, char*, int);
 int             pipewrite(struct pipe*, char*, int);
 
+typedef uint pte_t;
+
 //PAGEBREAK: 16
 // proc.c
 struct proc*    copyproc(struct proc*);
@@ -124,7 +128,19 @@ void            yield(void);
 int             get_pages_in_ram_count(void);
 int             get_pages_in_disk_count(void);
 int             get_page_offset_and_mark_not_set(uint);
+int             insert_to_pages_and_get_offset(uint);
+int             insert_to_pages_and_get_offset_with_proc(uint, struct proc*);
 void            add_page_ram(uint);
+void            add_page_disk(uint);
+void            remove_page(uint);
+void            push_to_lifo(uint);
+uint            pop_from_lifo(void);
+void            remove_from_lifo(uint);
+void            enqueue_scfifo(uint);
+uint            dequeue_scfifo(void);
+void            remove_from_scfifo(uint);
+void            update_access_lap(void);
+uint            get_from_lap(void);
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -175,20 +191,27 @@ void            uartputc(int);
 
 // vm.c
 void            seginit(void);
+pte_t*          walkpgdir(pde_t*, const void*, int);
 void            kvmalloc(void);
 void            vmenable(void);
 pde_t*          setupkvm(void);
 char*           uva2ka(pde_t*, char*);
 int             allocuvm(pde_t*, uint, uint);
 int             deallocuvm(pde_t*, uint, uint);
+int             enhanced_dealloc_uvm(pde_t*, uint, uint);
 void            freevm(pde_t*);
 void            inituvm(pde_t*, char*, uint);
 int             loaduvm(pde_t*, char*, struct inode*, uint, uint);
-pde_t*          copyuvm(pde_t*, uint);
+pde_t*          copyuvm(pde_t*, uint, struct proc*);
 void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
+uint            choose_va_to_drop(void);
+void            page_out_appropriate_page(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+#define FALSE 0
+#define TRUE 1

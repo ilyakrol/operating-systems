@@ -7,6 +7,8 @@
 #include "x86.h"
 #include "elf.h"
 
+int strcmp(const char *p, const char *q);
+
 int
 exec(char *path, char **argv)
 {
@@ -26,13 +28,32 @@ exec(char *path, char **argv)
   ilock(ip);
   pgdir = 0;
 
+  // reset lifo stack
+  for(i = 0; i < MAX_PSYC_PAGES; i++) {
+      proc->lifo_stack.set[i] = 0;
+      proc->lifo_stack.va[i] = 0;
+      proc->lifo_stack.head = 0;
+      proc->lifo_stack.count = 0;
+  }
+
+  // reset scfifo queue
+  for(i = 0; i < MAX_PSYC_PAGES; i++) {
+      proc->fifo_queue.set[i] = 0;
+      proc->fifo_queue.va[i] = 0;
+      proc->fifo_queue.first = 0;
+      proc->fifo_queue.last = 0;
+      proc->fifo_queue.count = 0;
+  }
+
   // reset pages and remove the swap file
   proc->page_faults = 0;
   proc->paged_out = 0;
+  proc->total_paged_out = 0;
   for (i = 0; i < MAX_TOTAL_PAGES; ++i) {
     proc->pages.va[i] = 0;
     proc->pages.count = 0;
     proc->pages.location[i] = 0;
+    proc->pages.access_counter[i] = 0;
   }
   removeSwapFile(proc);
 
@@ -102,6 +123,11 @@ exec(char *path, char **argv)
   proc->sz = sz;
   proc->tf->eip = elf.entry;  // main
   proc->tf->esp = sp;
+
+  if(strcmp(proc->name, "init") && strcmp(proc->name, "sh")) {
+    createSwapFile(proc);
+  }
+
   switchuvm(proc);
   freevm(oldpgdir);
   return 0;

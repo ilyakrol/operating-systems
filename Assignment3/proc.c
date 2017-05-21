@@ -20,6 +20,41 @@ extern void trapret(void);
 
 static void wakeup1(void *chan);
 
+void print_procces_info(struct proc* p, int print_free_pages) {
+    static char *states[] = {
+        [UNUSED]    "unused",
+        [EMBRYO]    "embryo",
+        [SLEEPING]  "sleep ",
+        [RUNNABLE]  "runble",
+        [RUNNING]   "run   ",
+        [ZOMBIE]    "zombie"
+    };
+    int i;
+    char *state;
+    uint pc[10];
+    cprintf("\n");
+    if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
+        state = states[p->state];
+    else
+        state = "???";
+    cprintf("%d %s %s", p->pid, state, p->name);
+    if(p->state == SLEEPING) {
+        getcallerpcs((uint*)p->context->ebp+2, pc);
+        for(i=0; i<10 && pc[i] != 0; i++) {
+            cprintf(" %p", pc[i]);
+        }
+    }
+    cprintf("\nallocated memory pages: %d\n",p->pages.count);
+    cprintf("paged out: %d\n",p->paged_out);
+    cprintf("page faults: %d\n",p->page_faults);
+    cprintf("total number of paged out: %d\n",p->total_paged_out);
+    cprintf("\n");
+    if(print_free_pages) {
+        cprintf("%d / %d = \n", (total_pages_in_system - pages_allocated_in_system) , total_pages_in_system);
+        cprintf("%d# free pages in system\n", (((total_pages_in_system - pages_allocated_in_system) * 100) / total_pages_in_system));
+    }
+}
+
 void
 pinit(void)
 {
@@ -54,6 +89,7 @@ found:
     p->state = UNUSED;
     return 0;
   }
+  pages_allocated_in_system++;
   sp = p->kstack + KSTACKSIZE;
 
   // Leave room for trap frame.
@@ -69,6 +105,9 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+  p->paged_out = 0;
+  p->page_faults = 0;
+  p->total_paged_out = 0;
 
   return p;
 }
@@ -114,7 +153,7 @@ growproc(int n)
     if((sz = allocuvm(proc->pgdir, sz, sz + n)) == 0)
       return -1;
   } else if(n < 0){
-    if((sz = deallocuvm(proc->pgdir, sz, sz + n)) == 0)
+    if((sz = enhanced_dealloc_uvm(proc->pgdir, sz, sz + n)) == 0)
       return -1;
   }
   proc->sz = sz;
@@ -142,10 +181,29 @@ fork(void)
     np->pages.location[i] = proc->pages.location[i];
   }
   np->paged_out = proc->paged_out;
+  np->total_paged_out = proc->total_paged_out;
+
+  // copy lifo stack
+  for(i = 0; i < MAX_PSYC_PAGES; i++) {
+    np->lifo_stack.set[i] = proc->lifo_stack.set[i];
+    np->lifo_stack.va[i] = proc->lifo_stack.va[i];
+    np->lifo_stack.head = proc->lifo_stack.head;
+    np->lifo_stack.count = proc->lifo_stack.count;
+  }
+
+  // copy fifo queue
+  for(i = 0; i < MAX_PSYC_PAGES; i++) {
+    np->fifo_queue.set[i] = proc->fifo_queue.set[i];
+    np->fifo_queue.va[i] = proc->fifo_queue.va[i];
+    np->fifo_queue.first = proc->fifo_queue.first;
+    np->fifo_queue.last = proc->fifo_queue.last;
+    np->fifo_queue.count = proc->fifo_queue.count;
+  }
 
   // Copy process state from p.
-  if((np->pgdir = copyuvm(proc->pgdir, proc->sz)) == 0){
+  if((np->pgdir = copyuvm(proc->pgdir, proc->sz, np)) == 0){
     kfree(np->kstack);
+    pages_allocated_in_system--;
     np->kstack = 0;
     np->state = UNUSED;
     return -1;
@@ -214,6 +272,7 @@ exit(void)
   }
 
   // Jump into the scheduler, never to return.
+  if(VERBOSE_PRINT == TRUE) print_procces_info(proc, 1);
   proc->state = ZOMBIE;
   sched();
   panic("zombie exit");
@@ -225,7 +284,7 @@ int
 wait(void)
 {
   struct proc *p;
-  int havekids, pid;
+  int havekids, pid, i;
 
   acquire(&ptable.lock);
   for(;;){
@@ -235,10 +294,11 @@ wait(void)
       if(p->parent != proc)
         continue;
       havekids = 1;
-      if(p->state == ZOMBIE){
+      if(p->state == ZOMBIE) {
         // Found one.
         pid = p->pid;
         kfree(p->kstack);
+        pages_allocated_in_system--;
         p->kstack = 0;
         freevm(p->pgdir);
         // reset all the pages in disk entries in the data structure
@@ -447,34 +507,14 @@ kill(int pid)
 void
 procdump(void)
 {
-  static char *states[] = {
-  [UNUSED]    "unused",
-  [EMBRYO]    "embryo",
-  [SLEEPING]  "sleep ",
-  [RUNNABLE]  "runble",
-  [RUNNING]   "run   ",
-  [ZOMBIE]    "zombie"
-  };
-  int i;
   struct proc *p;
-  char *state;
-  uint pc[10];
-
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->state == UNUSED)
       continue;
-    if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
-      state = states[p->state];
-    else
-      state = "???";
-    cprintf("%d %s %s", p->pid, state, p->name);
-    if(p->state == SLEEPING){
-      getcallerpcs((uint*)p->context->ebp+2, pc);
-      for(i=0; i<10 && pc[i] != 0; i++)
-        cprintf(" %p", pc[i]);
-    }
-    cprintf("\n");
+    print_procces_info(p, 0);
   }
+  cprintf("%d / %d = \n", (total_pages_in_system - pages_allocated_in_system) , total_pages_in_system);
+  cprintf("%d# free pages in system\n", (((total_pages_in_system - pages_allocated_in_system) * 100) / total_pages_in_system));
 }
 
 int
@@ -516,6 +556,39 @@ get_page_offset_and_mark_not_set(uint va) {
     return -1;
 }
 
+// insert a page to the disk pages data structure and gri it's offset
+int
+insert_to_pages_and_get_offset(uint va) {
+    int i;
+    for (i = 0; i <  MAX_TOTAL_PAGES - MAX_PSYC_PAGES; i++) {
+        if(!proc->pages_in_disk[i].set) {
+            proc->pages_in_disk[i].set = 1;
+            proc->pages_in_disk[i].va = va;
+            proc->paged_out++;
+            proc->total_paged_out++;
+            return i * PGSIZE;
+        }
+    }
+    panic("no available page to swap");
+    return -1;
+}
+
+int
+insert_to_pages_and_get_offset_with_proc(uint va, struct proc* p) {
+    int i;
+    for (i = 0; i <  MAX_TOTAL_PAGES - MAX_PSYC_PAGES; i++) {
+        if(!p->pages_in_disk[i].set) {
+            p->pages_in_disk[i].set = 1;
+            p->pages_in_disk[i].va = va;
+            p->paged_out++;
+            p->total_paged_out++;
+            return i * PGSIZE;
+        }
+    }
+    panic("no available page to swap");
+    return -1;
+}
+
 void
 add_page_ram(uint va) {
     int i;
@@ -536,18 +609,55 @@ add_page_ram(uint va) {
 }
 
 void
+add_page_disk(uint va) {
+    int i;
+    int exists = 0;
+    // check if already exists in pages data structure
+    for(i = 0; i < proc->pages.count; i++) {
+        if(proc->pages.va[i] == va) {   // found the page
+          exists = 1;
+          break;
+        }
+    }
+    // update number of pages and add the virtual address if new to pages data srtructure
+    if(!exists) {
+        proc->pages.count++;
+        proc->pages.va[i] = va;
+    }
+    proc->pages.location[i] = DISK;  // located in ram
+}
+
+void
+remove_page(uint va) {
+    int i;
+    int exists = 0;
+    // check if exists in pages data structure
+    for (i = 0; i < proc->pages.count; ++i) {
+        if(proc->pages.va[i] == va) {    // found the page
+            exists = 1;
+            break;
+        }
+    }
+    if(!exists) panic("cannot remove page - does not exist in pages data structure");
+    proc->pages.count--;
+    proc->pages.va[i] = 0;
+    proc->pages.location[i] = BLANK;
+    proc->pages.access_counter[i] = 0;
+}
+
+void
 push_to_lifo(uint va) {
     int head = proc->lifo_stack.head;
-    while(proc->lifo_stack.set[last] == 1) {    // search for the first empty slot
+    while(proc->lifo_stack.set[head] == 1) {    // search for the first empty slot
         head = (head + 1) % MAX_PSYC_PAGES;
     }
     proc->lifo_stack.va[head] = va;
     proc->lifo_stack.set[head] = 1;
-    head = (head + 1) % MAX_PSYC_PAGES;
+    proc->lifo_stack.head = (head + 1) % MAX_PSYC_PAGES;
     proc->lifo_stack.count++;
 }
 
-void
+uint
 pop_from_lifo() {
     int head = (proc->lifo_stack.head - 1) % MAX_PSYC_PAGES;
     uint va = proc->lifo_stack.va[head];
@@ -559,7 +669,23 @@ pop_from_lifo() {
 }
 
 void
-enqueue_fifo(uint va) {
+remove_from_lifo(uint va) {
+    int i;
+    for(i = 0; i < MAX_PSYC_PAGES; i++) {
+        if(proc->lifo_stack.va[i] == va) {  // found the entry to remove
+            proc->lifo_stack.set[i] = 0;
+            proc->lifo_stack.va[i] = 0;
+            proc->lifo_stack.count--;
+            if(i == proc->lifo_stack.head) {
+                proc->lifo_stack.head = (proc->lifo_stack.head - 1) % MAX_PSYC_PAGES;
+            }
+            return;
+        }
+    }
+}
+
+void
+enqueue_scfifo(uint va) {
     int last = proc->fifo_queue.last;
     while(proc->fifo_queue.set[last] == 1) {    // search for the first empty slot
         last = (last + 1) % MAX_PSYC_PAGES;
@@ -577,7 +703,7 @@ dequeue_scfifo() {
     int first = proc->fifo_queue.first;
     // loop and reset bits until a page to dequeue is found
     while(1) {
-        while (proc->fifo_queue.occupied[first] == 0) {
+        while (proc->fifo_queue.set[first] == 0) {
             first = (first + 1) % MAX_PSYC_PAGES;
         }
         va = proc->fifo_queue.va[first];
@@ -589,8 +715,67 @@ dequeue_scfifo() {
         }
         proc->fifo_queue.va[first] = 0;
         proc->fifo_queue.set[first] = 0;
-        proc->fifo_queue.firstIndex = (first + 1) % MAX_PSYC_PAGES;
+        proc->fifo_queue.first = (first + 1) % MAX_PSYC_PAGES;
         proc->fifo_queue.count--;
         return va;
     }
+}
+
+void
+remove_from_scfifo(uint va) {
+    int i;
+    for(i = 0; i < MAX_PSYC_PAGES; i++) {
+        if(proc->fifo_queue.va[i] == va) {  // found the entry to remove
+            proc->fifo_queue.set[i] = 0;
+            proc->fifo_queue.va[i] = 0;
+            proc->fifo_queue.count--;
+            if(i == proc->fifo_queue.first) {
+                proc->fifo_queue.first = (proc->fifo_queue.first + 1) % MAX_PSYC_PAGES;
+            }
+            if(i == proc->fifo_queue.last) {
+                proc->fifo_queue.last = (proc->fifo_queue.last - 1) % MAX_PSYC_PAGES;
+            }
+            return;
+        }
+    }
+}
+
+void
+update_access_lap() {
+    int i;
+    pte_t* page;
+    for(i = 0; i < MAX_TOTAL_PAGES; i++) {
+        if(proc->pages.location[i] == RAM) {
+            page = walkpgdir(proc->pgdir, (void*) proc->pages.va[i], 0);
+            if(PTE_FLAGS(*page) & PTE_A) {  // the access flag is set
+                // cprintf("\nUPDATING COUNTER OF [%d]\n", i);
+                proc->pages.access_counter[i]++;    // update counter
+                *page &= ~PTE_A;    // clear PTA flag
+            }
+        }
+    }
+}
+
+uint
+get_from_lap() {
+    int i;
+    int min_access = -1;
+    int min_va = 0;
+    for(i = 0; i < MAX_TOTAL_PAGES; i++) {
+        if(proc->pages.location[i] == RAM) {
+            // cprintf("\nFOUND A PAGE IN RAM\n");
+            min_access = proc->pages.access_counter[i];
+            min_va = proc->pages.va[i];
+            break;
+        }
+    }
+    if(min_access == -1) panic("no pages in ram");
+    for(; i < MAX_TOTAL_PAGES; i++) {
+        if(proc->pages.location[i] == RAM && proc->pages.access_counter[i] < min_access) {
+            // cprintf("\nMIN = %d\n", proc->pages.access_counter[i]);
+            min_access = proc->pages.access_counter[i];
+            min_va = proc->pages.va[i];
+        }
+    }
+    return min_va;
 }

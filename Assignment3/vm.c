@@ -7,6 +7,14 @@
 #include "proc.h"
 #include "elf.h"
 
+int
+strcmp(const char *p, const char *q)
+{
+  while(*p && *p == *q)
+    p++, q++;
+  return (uchar)*p - (uchar)*q;
+}
+
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
@@ -33,7 +41,7 @@ seginit(void)
 
   lgdt(c->gdt, sizeof(c->gdt));
   loadgs(SEG_KCPU << 3);
-  
+
   // Initialize cpu-local storage.
   cpu = c;
   proc = 0;
@@ -42,7 +50,7 @@ seginit(void)
 // Return the address of the PTE in page table pgdir
 // that corresponds to virtual address va.  If alloc!=0,
 // create any required page table pages.
-static pte_t *
+pte_t *
 walkpgdir(pde_t *pgdir, const void *va, int alloc)
 {
   pde_t *pde;
@@ -54,10 +62,11 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
   } else {
     if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
       return 0;
+    pages_allocated_in_system++;
     // Make sure all those PTE_P bits are zero.
     memset(pgtab, 0, PGSIZE);
     // The permissions here are overly generous, but they can
-    // be further restricted by the permissions in the page table 
+    // be further restricted by the permissions in the page table
     // entries, if necessary.
     *pde = v2p(pgtab) | PTE_P | PTE_W | PTE_U;
   }
@@ -72,7 +81,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 {
   char *a, *last;
   pte_t *pte;
-  
+
   a = (char*)PGROUNDDOWN((uint)va);
   last = (char*)PGROUNDDOWN(((uint)va) + size - 1);
   for(;;){
@@ -94,7 +103,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 // current process's page table during system calls and interrupts;
 // page protection bits prevent user code from using the kernel's
 // mappings.
-// 
+//
 // setupkvm() and exec() set up every page table like this:
 //
 //   0..KERNBASE: user memory (text+data+stack+heap), mapped to
@@ -102,7 +111,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 //   KERNBASE..KERNBASE+EXTMEM: mapped to 0..EXTMEM (for I/O space)
 //   KERNBASE+EXTMEM..data: mapped to EXTMEM..V2P(data)
 //                for the kernel's instructions and r/o data
-//   data..KERNBASE+PHYSTOP: mapped to V2P(data)..PHYSTOP, 
+//   data..KERNBASE+PHYSTOP: mapped to V2P(data)..PHYSTOP,
 //                                  rw data + free physical memory
 //   0xfe000000..0: mapped direct (devices such as ioapic)
 //
@@ -133,11 +142,12 @@ setupkvm(void)
 
   if((pgdir = (pde_t*)kalloc()) == 0)
     return 0;
+  pages_allocated_in_system++;
   memset(pgdir, 0, PGSIZE);
   if (p2v(PHYSTOP) > (void*)DEVSPACE)
     panic("PHYSTOP too high");
   for(k = kmap; k < &kmap[NELEM(kmap)]; k++)
-    if(mappages(pgdir, k->virt, k->phys_end - k->phys_start, 
+    if(mappages(pgdir, k->virt, k->phys_end - k->phys_start,
                 (uint)k->phys_start, k->perm) < 0)
       return 0;
   return pgdir;
@@ -182,10 +192,11 @@ void
 inituvm(pde_t *pgdir, char *init, uint sz)
 {
   char *mem;
-  
+
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
   mem = kalloc();
+  pages_allocated_in_system++;
   memset(mem, 0, PGSIZE);
   mappages(pgdir, 0, PGSIZE, v2p(mem), PTE_W|PTE_U);
   memmove(mem, init, sz);
@@ -230,13 +241,23 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 
   a = PGROUNDUP(oldsz);
   for(; a < newsz; a += PGSIZE){
+    if(get_pages_in_ram_count() >= MAX_PSYC_PAGES && SELECTION != NONE) {
+      // max number of pages in ram reached. drop a page to disk
+      page_out_appropriate_page();
+    }
     mem = kalloc();
     if(mem == 0){
       cprintf("allocuvm out of memory\n");
       deallocuvm(pgdir, newsz, oldsz);
       return 0;
     }
+    pages_allocated_in_system++;
     memset(mem, 0, PGSIZE);
+    if(strcmp(proc->name, "init") && strcmp(proc->name, "sh")) {    // regular proccess
+        if(SELECTION == LIFO) push_to_lifo(a);
+        else if(SELECTION == SCFIFO) enqueue_scfifo(a);
+    }
+    add_page_ram(a);    // add the page to ram
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
   }
   return newsz;
@@ -263,11 +284,45 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     else if((*pte & PTE_P) != 0){
       pa = PTE_ADDR(*pte);
       if(pa == 0)
-        panic("kfree");
+        panic("deallocuvm: kfree");
       char *v = p2v(pa);
       kfree(v);
+      pages_allocated_in_system--;
       *pte = 0;
     }
+  }
+  return newsz;
+}
+
+int
+enhanced_dealloc_uvm(pde_t *pgdir, uint oldsz, uint newsz)
+{
+  pte_t *pte;
+  uint a, pa;
+
+  if(newsz >= oldsz)
+    return oldsz;
+
+  a = PGROUNDUP(newsz);
+  for(; a  < oldsz; a += PGSIZE){
+    pte = walkpgdir(pgdir, (char*)a, 0);
+    if(!pte)
+      a += (NPTENTRIES - 1) * PGSIZE;
+
+    else if((*pte & PTE_P) == 0) {  // disk
+        get_page_offset_and_mark_not_set(a);
+    } else {    // ram
+        pa = PTE_ADDR(*pte);
+        if(pa == 0)
+          panic("kfree");
+        char *v = p2v(pa);
+        kfree(v);
+        pages_allocated_in_system--;
+        *pte = 0;
+    }
+    remove_page(a); // remove from the pages data structure
+    if(SELECTION == LIFO) remove_from_lifo(a);
+    else if(SELECTION == SCFIFO) remove_from_scfifo(a);
   }
   return newsz;
 }
@@ -286,9 +341,11 @@ freevm(pde_t *pgdir)
     if(pgdir[i] & PTE_P){
       char * v = p2v(PTE_ADDR(pgdir[i]));
       kfree(v);
+      pages_allocated_in_system--;
     }
   }
   kfree((char*)pgdir);
+  pages_allocated_in_system--;
 }
 
 // Clear PTE_U on a page. Used to create an inaccessible
@@ -307,27 +364,52 @@ clearpteu(pde_t *pgdir, char *uva)
 // Given a parent process's page table, create a copy
 // of it for a child.
 pde_t*
-copyuvm(pde_t *pgdir, uint sz)
+copyuvm(pde_t *pgdir, uint sz, struct proc* np)
 {
   pde_t *d;
   pte_t *pte;
-  uint pa, i, flags;
+  uint pa, i, j, flags;
   char *mem;
+  int found, offset;
 
   if((d = setupkvm()) == 0)
     return 0;
-  for(i = 0; i < sz; i += PGSIZE){
+  if(strcmp(np->name, "init") && strcmp(np->name, "sh")) {
+      createSwapFile(np);
+  }
+  for(i = 0; i < sz; i += PGSIZE) {
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
-    if(!(*pte & PTE_P))
-      panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
       goto bad;
-    memmove(mem, (char*)p2v(pa), PGSIZE);
+    pages_allocated_in_system++;
+    found = 0;
+    if(*pte & PTE_P) memmove(mem, (char*)p2v(pa), PGSIZE);  // in ram
+    // in disk
+    else if(!(*pte & PTE_PG)) panic("copyuvm: page not present");
+    else {
+      offset = 0;
+      // search for the page in disk pages
+      for(j = 0; j < MAX_TOTAL_PAGES - MAX_PSYC_PAGES; j++) {
+          if(proc->pages_in_disk[j].set && proc->pages_in_disk[j].va == (uint)i) {  // found it
+            offset = insert_to_pages_and_get_offset_with_proc(i, np);
+            add_page_disk(i);
+            readFromSwapFile(proc, (char*) mem, (uint) offset, (uint) PGSIZE);
+            writeToSwapFile(np, (char*) mem, (uint)offset, PGSIZE);
+            found = 1;
+            break;
+          }
+        }
+        if(!found) panic("did not find the page in disk");
+    }
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
+    if(found) {
+        kfree(mem);
+        pages_allocated_in_system--;
+    }
   }
   return d;
 
@@ -377,10 +459,48 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   return 0;
 }
 
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
+uint
+choose_va_to_drop() {
+    uint va = 0;
+    switch (SELECTION) {
+        case LIFO:
+            va = pop_from_lifo();
+            break;
+        case SCFIFO:
+            va = dequeue_scfifo();
+            break;
+        case LAP:
+            va = get_from_lap();
+            break;
+    }
+    return va;
+}
 
+void
+page_out_appropriate_page() {
+    uint va;
+    pte_t* pte;
+    va = choose_va_to_drop();   // choose the va to drop according to the selected policy
+    pte = walkpgdir(proc->pgdir, (void*) va, 0);    // get the PTE from the virtual address
+    uint addr = (uint) p2v(PTE_ADDR(*pte)); // get the virtual address in the kernel
+    int offset = insert_to_pages_and_get_offset(va);    // get swap file oofset
+    add_page_disk(va);  // add to the pages data structure and mark as DISK
+    // change the flags to indicate this is a swapped page
+    *pte |= PTE_PG; // paged out
+    *pte &= ~PTE_P; // not present
+    *pte &= ~PTE_U; // user page
+
+    // write the page to the swap file
+    if(writeToSwapFile(proc, (char*)addr, offset, PGSIZE) == -1) panic("could not write to swap file");
+
+    kfree((char*) addr);
+    pages_allocated_in_system--;
+    lcr3(v2p(proc->pgdir));
+}
+
+//PAGEBREAK!
+// Blank page.
+//PAGEBREAK!
+// Blank page.
+//PAGEBREAK!
+// Blank page.
