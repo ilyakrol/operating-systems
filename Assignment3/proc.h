@@ -114,6 +114,8 @@ struct proc {
   uint total_paged_out;         // total number of paged out pages
 };
 
+int strcmp(const char*, const char*);
+
 // Process memory is laid out contiguously, low addresses first:
 //   text
 //   original data and bss

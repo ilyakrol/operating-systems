@@ -7,14 +7,6 @@
 #include "proc.h"
 #include "elf.h"
 
-int
-strcmp(const char *p, const char *q)
-{
-  while(*p && *p == *q)
-    p++, q++;
-  return (uchar)*p - (uchar)*q;
-}
-
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
@@ -311,6 +303,7 @@ enhanced_dealloc_uvm(pde_t *pgdir, uint oldsz, uint newsz)
 
     else if((*pte & PTE_P) == 0) {  // disk
         get_page_offset_and_mark_not_set(a);
+        *pte  &= ~PTE_PG;   // reset the paged out flag
     } else {    // ram
         pa = PTE_ADDR(*pte);
         if(pa == 0)
@@ -396,7 +389,7 @@ copyuvm(pde_t *pgdir, uint sz, struct proc* np)
           if(proc->pages_in_disk[j].set && proc->pages_in_disk[j].va == (uint)i) {  // found it
             offset = insert_to_pages_and_get_offset_with_proc(i, np);
             add_page_disk(i);
-            readFromSwapFile(proc, (char*) mem, (uint) offset, (uint) PGSIZE);
+            readFromSwapFile(proc, (char*) mem, (uint) offset, PGSIZE);
             writeToSwapFile(np, (char*) mem, (uint)offset, PGSIZE);
             found = 1;
             break;

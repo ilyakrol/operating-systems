@@ -78,12 +78,12 @@ trap(struct trapframe *tf)
     lapiceoi();
     break;
   case T_PGFLT:
-    if(proc) {
+    if(proc && (tf->cs & 3) == DPL_USER) {
       proc->page_faults++;
       uint cr2 = (uint) (PGROUNDDOWN(rcr2()));  // CR2 holds the faulting address that tried to be accessed
       pte_t* missing_page = walkpgdir(proc->pgdir, (void*) cr2, 0); // get the PTE of the address
 
-      if(!(PTE_FLAGS(*missing_page) & PTE_PG)) {    // PTE_PG bit is not set
+      if(!missing_page || !(PTE_FLAGS(*missing_page) & PTE_PG)) {    // PTE_PG bit is not set
         panic("just a regular segmentation fault");
       }
 
